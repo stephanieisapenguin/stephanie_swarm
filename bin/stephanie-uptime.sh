@@ -157,6 +157,39 @@ for entry in "${BOTS[@]}"; do
   fi
 done
 
+# --- ollama API endpoint (server.py + tailscale funnel + ollama backend) ---
+OLLAMA_API_LOCAL="http://localhost:8080/healthz"
+OLLAMA_API_PUBLIC="https://jasons-macbook-pro-3.tail70b2c1.ts.net/healthz"
+OLLAMA_BACKEND="http://localhost:11434/api/tags"
+
+api_reasons=()
+/usr/bin/curl -fsS --max-time 10 "$OLLAMA_API_LOCAL"  >/dev/null 2>&1 || api_reasons+=("local server down")
+/usr/bin/curl -fsS --max-time 15 "$OLLAMA_API_PUBLIC" >/dev/null 2>&1 || api_reasons+=("public funnel unreachable")
+/usr/bin/curl -fsS --max-time 10 "$OLLAMA_BACKEND"    >/dev/null 2>&1 || api_reasons+=("ollama backend down")
+
+api_pid=$(/usr/bin/pgrep -f "server.py serve" 2>/dev/null | head -1)
+api_display="ollama-api"
+
+if [[ ${#api_reasons[@]} -eq 0 ]]; then
+  STATUS_ROWS+=("$(printf '%-22s %-7s %-22s OK' "$api_display" "${api_pid:--}" "funnel")")
+  if mark_up "ollama-api"; then
+    log "RECOVER ${api_display}"
+    send_alert "✅ ${api_display} recovered" || log "ALERT-FAIL ${api_display} recovery"
+  else
+    log "OK ${api_display}"
+  fi
+else
+  any_failure=1
+  api_reason_str="${api_reasons[*]}"
+  STATUS_ROWS+=("$(printf '%-22s %-7s %-22s DOWN: %s' "$api_display" "${api_pid:--}" "funnel" "$api_reason_str")")
+  if should_alert "ollama-api" "$api_reason_str"; then
+    log "DOWN ${api_display}: $api_reason_str"
+    send_alert "🔴 ${api_display} down: ${api_reason_str}" || log "ALERT-FAIL ${api_display} down"
+  else
+    log "STILL-DOWN ${api_display}: $api_reason_str"
+  fi
+fi
+
 # Heartbeat (dead-man's switch + fleet status body). Only fires if HEALTHCHECKS_URL is set.
 if [[ -n "${HEALTHCHECKS_URL:-}" ]]; then
   body=$(
